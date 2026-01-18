@@ -1,29 +1,50 @@
-version: "3.8"
-
 services:
-  postgres:
+  db:
     image: postgres:15
-    container_name: mini_analytics_db
+    container_name: postgres_db
     environment:
-      POSTGRES_USER: admin
-      POSTGRES_PASSWORD: admin
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
       POSTGRES_DB: analytics
     ports:
       - "5432:5432"
     volumes:
+      - db_data:/var/lib/postgresql/data
       - ./db:/docker-entrypoint-initdb.d
 
-  data-source:
+  api:
     build: ./data-source
-    container_name: mini_analytics_data_source
+    container_name: flask_api
     ports:
       - "5001:5001"
+    depends_on:
+      - db
+    volumes:
+      - ./data-source/data.csv:/app/data.csv
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5001/orders"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
   pipeline:
     build: ./pipeline
+    container_name: data_pipeline
     depends_on:
-      - postgres
-      - data-source
+      api:
+        condition: service_healthy
+      db:
+        condition: service_started
+
+  dashboard-api:
+    build: ./dashboard-api
+    container_name: dashboard_api
+    ports:
+      - "5002:5002"
+    depends_on:
+      - db
     environment:
-      POSTGRES_USER: admin
-      POSTGRES_PASSWORD: admin
-      POSTGRES_DB: analytics
+      - API_TOKEN=secrettoken
+
+volumes:
+  db_data:

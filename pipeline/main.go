@@ -5,8 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
-	"os"
+	"time"
 
 	_ "github.com/lib/pq"
 )
@@ -19,8 +20,10 @@ type Order struct {
 	PaymentMethod string  `json:"payment_method"`
 }
 
+
 func fetchOrders() ([]Order, error) {
-	resp, err := http.Get("http://data-source:5001/orders")
+	resp, err := http.Get("http://flask_api:5001/orders")
+
 	if err != nil {
 		return nil, err
 	}
@@ -34,8 +37,21 @@ func fetchOrders() ([]Order, error) {
 }
 
 func connectDB() (*sql.DB, error) {
-	connStr := "host=postgres user=admin password=admin dbname=analytics sslmode=disable"
+	connStr := "host=db port=5432 user=postgres password=postgres dbname=analytics sslmode=disable"
 	return sql.Open("postgres", connStr)
+}
+
+func parseTimestamp(ts string) time.Time {
+	if ts == "" {
+		return time.Now().UTC()
+	}
+
+	parsed, err := time.Parse(time.RFC3339, ts)
+	if err != nil {
+		return time.Now().UTC()
+	}
+
+	return parsed
 }
 
 func insertOrders(db *sql.DB, orders []Order) error {
@@ -43,17 +59,41 @@ func insertOrders(db *sql.DB, orders []Order) error {
 	INSERT INTO raw_data.orders 
 	(order_id, created_at, status, value, payment_method)
 	VALUES ($1, $2, $3, $4, $5)
-	ON CONFLICT (order_id) DO NOTHING;
 	`
 
 	for _, o := range orders {
-		_, err := db.Exec(query, o.OrderID, o.CreatedAt, o.Status, o.Value, o.PaymentMethod)
+		createdAt := parseTimestamp(o.CreatedAt)
+
+		_, err := db.Exec(
+			query,
+			o.OrderID,
+			createdAt,
+			o.Status,
+			o.Value,
+			o.PaymentMethod,
+		)
+
 		if err != nil {
 			return err
 		}
 	}
-
 	return nil
+}
+
+func aggregateDailyMetrics(db *sql.DB) error {
+	query := `
+	INSERT INTO aggregated.daily_metrics
+	SELECT
+		DATE(created_at) AS date,
+		status,
+		payment_method,
+		COUNT(*) AS total_orders,
+		SUM(value) AS total_revenue
+	FROM raw_data.orders
+	GROUP BY DATE(created_at), status, payment_method;
+	`
+	_, err := db.Exec(query)
+	return err
 }
 
 func main() {
@@ -61,21 +101,23 @@ func main() {
 
 	orders, err := fetchOrders()
 	if err != nil {
-		fmt.Println("Erro ao buscar dados:", err)
-		os.Exit(1)
+		log.Fatal("Erro ao buscar dados:", err)
 	}
 
 	db, err := connectDB()
 	if err != nil {
-		fmt.Println("Erro ao conectar no banco:", err)
-		os.Exit(1)
+		log.Fatal("Erro ao conectar no banco:", err)
 	}
 	defer db.Close()
 
 	err = insertOrders(db, orders)
 	if err != nil {
-		fmt.Println("Erro ao inserir dados:", err)
-		os.Exit(1)
+		log.Fatal("Erro ao inserir dados:", err)
+	}
+
+	err = aggregateDailyMetrics(db)
+	if err != nil {
+		log.Fatal("Erro na agregação:", err)
 	}
 
 	fmt.Println("Pipeline finalizado com sucesso.")
