@@ -1,5 +1,5 @@
-import React, { useState, useEffect } from "react";
-import { getOrders } from "../services/api";
+import React, { useState, useEffect, useCallback } from "react";
+import { getMetrics, api } from "../services/api"; // <-- api importado corretamente
 import {
   LineChart,
   Line,
@@ -12,129 +12,109 @@ import {
 } from "recharts";
 
 function Dashboard() {
-  const [orders, setOrders] = useState([]);
-  const [filteredOrders, setFilteredOrders] = useState([]);
+  const [metrics, setMetrics] = useState([]);
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
   const [paymentMethod, setPaymentMethod] = useState("");
+  const [loading, setLoading] = useState(false);
 
-  const [metrics, setMetrics] = useState({
-    approvedRevenue: 0,
-    pendingRevenue: 0,
-    canceledRevenue: 0,
-    approvedOrders: 0,
-    pendingOrders: 0,
-    canceledOrders: 0,
-  });
-
-  const fetchOrders = async () => {
+  const fetchMetrics = useCallback(async () => {
+    setLoading(true);
     try {
-      const data = await getOrders();
-      setOrders(data);
-      setFilteredOrders(data);
+      const data = await getMetrics({
+        start: startDate || undefined,
+        end: endDate || undefined,
+        payment_method: paymentMethod || undefined,
+      });
+      setMetrics(Array.isArray(data) ? data : []);
     } catch (error) {
-      console.error("Erro ao buscar pedidos:", error);
+      console.error("Erro ao buscar métricas:", error);
+      setMetrics([]);
+    } finally {
+      setLoading(false);
     }
-  };
+  }, [startDate, endDate, paymentMethod]);
 
   useEffect(() => {
-    let filtered = [...orders];
-    if (startDate) filtered = filtered.filter(o => new Date(o.created_at) >= new Date(startDate));
-    if (endDate) filtered = filtered.filter(o => new Date(o.created_at) <= new Date(endDate));
-    if (paymentMethod) filtered = filtered.filter(o => o.payment_method === paymentMethod);
-    setFilteredOrders(filtered);
-  }, [startDate, endDate, paymentMethod, orders]);
+    fetchMetrics();
+  }, [fetchMetrics]);
 
-  useEffect(() => {
-    const approvedRevenue = filteredOrders
-      .filter(o => o.status === "approved")
-      .reduce((sum, o) => sum + o.value, 0);
-
-    const pendingRevenue = filteredOrders
-      .filter(o => o.status === "pending")
-      .reduce((sum, o) => sum + o.value, 0);
-
-    const canceledRevenue = filteredOrders
-      .filter(o => o.status === "cancelled")
-      .reduce((sum, o) => sum + o.value, 0);
-
-    const approvedOrders = filteredOrders.filter(o => o.status === "approved").length;
-    const pendingOrders = filteredOrders.filter(o => o.status === "pending").length;
-    const canceledOrders = filteredOrders.filter(o => o.status === "cancelled").length;
-
-    setMetrics({ approvedRevenue, pendingRevenue, canceledRevenue, approvedOrders, pendingOrders, canceledOrders });
-  }, [filteredOrders]);
-
-  const chartData = filteredOrders
-    .sort((a, b) => new Date(a.created_at) - new Date(b.created_at))
-    .map(o => ({ date: o.created_at.slice(0, 10), value: o.value, status: o.status }));
-
-  const handleSync = async () => {
-    try {
-      await fetchOrders();
-      alert("Dados sincronizados!");
-    } catch (error) {
-      console.error("Erro ao sincronizar:", error);
-      alert("Falha na sincronização");
-    }
+  const summarize = (status) => {
+    const filtered = metrics.filter((m) => m.status === status);
+    return {
+      revenue: filtered.reduce((sum, m) => sum + Number(m.total_revenue || 0), 0),
+      orders: filtered.reduce((sum, m) => sum + Number(m.total_orders || 0), 0),
+    };
   };
 
-  const paymentMethods = Array.from(new Set(orders.map(o => o.payment_method)));
+  const approved = summarize("approved");
+  const pending = summarize("pending");
+  const cancelled = summarize("cancelled");
+
+  const chartData = metrics.map((m) => ({
+    date: m.date,
+    value: Number(m.total_revenue || 0),
+    status: m.status,
+  }));
 
   return (
     <div style={styles.container}>
       <h1 style={styles.title}>Dashboard</h1>
 
-      {/* Filtros */}
       <div style={styles.filters}>
-        <input
-          type="date"
-          value={startDate}
-          onChange={(e) => setStartDate(e.target.value)}
-          style={styles.input}
-        />
-        <input
-          type="date"
-          value={endDate}
-          onChange={(e) => setEndDate(e.target.value)}
-          style={styles.input}
-        />
-        <select
-          value={paymentMethod}
-          onChange={(e) => setPaymentMethod(e.target.value)}
-          style={styles.select}
-        >
+        <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} />
+        <input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} />
+        <select value={paymentMethod} onChange={(e) => setPaymentMethod(e.target.value)}>
           <option value="">Todos os métodos</option>
-          {paymentMethods.map((m) => (
-            <option key={m} value={m}>{m}</option>
-          ))}
+          <option value="pix">PIX</option>
+          <option value="boleto">Boleto</option>
+          <option value="credit_card">Cartão</option>
         </select>
-        <button onClick={handleSync} style={styles.button}>Sincronizar</button>
+
+        <button onClick={fetchMetrics} disabled={loading}>
+          {loading ? "Carregando..." : "Atualizar"}
+        </button>
+
+        <button
+          onClick={async () => {
+            setLoading(true);
+            try {
+              await api.post("/sync");
+              await fetchMetrics();
+            } catch (err) {
+              console.error("Erro ao sincronizar dados:", err);
+            } finally {
+              setLoading(false);
+            }
+          }}
+          disabled={loading}
+          style={{ marginLeft: 10, backgroundColor: "#38bdf8", color: "#fff" }}
+        >
+          {loading ? "Sincronizando..." : "Sincronizar dados"}
+        </button>
       </div>
 
-      {/* Métricas */}
       <div style={styles.metricsContainer}>
-        <div style={{ ...styles.card, backgroundColor: "#e6f7ff" }}>Receita Aprovada: {metrics.approvedRevenue.toFixed(2)}</div>
-        <div style={{ ...styles.card, backgroundColor: "#fffbe6" }}>Receita Pendente: {metrics.pendingRevenue.toFixed(2)}</div>
-        <div style={{ ...styles.card, backgroundColor: "#fff1f0" }}>Receita Cancelada: {metrics.canceledRevenue.toFixed(2)}</div>
+        <div style={styles.card}>Receita Aprovada: {approved.revenue.toFixed(2)}</div>
+        <div style={styles.card}>Receita Pendente: {pending.revenue.toFixed(2)}</div>
+        <div style={styles.card}>Receita Cancelada: {cancelled.revenue.toFixed(2)}</div>
       </div>
 
       <div style={styles.metricsContainer}>
-        <div style={styles.card}>Pedidos Aprovados: {metrics.approvedOrders}</div>
-        <div style={styles.card}>Pedidos Pendentes: {metrics.pendingOrders}</div>
-        <div style={styles.card}>Pedidos Cancelados: {metrics.canceledOrders}</div>
+        <div style={styles.card}>Pedidos Aprovados: {approved.orders}</div>
+        <div style={styles.card}>Pedidos Pendentes: {pending.orders}</div>
+        <div style={styles.card}>Pedidos Cancelados: {cancelled.orders}</div>
       </div>
 
-      {/* Gráfico */}
-      <div style={{ width: "100%", height: 400, marginTop: 20 }}>
+      <div style={{ width: "100%", height: 400 }}>
         <ResponsiveContainer>
           <LineChart data={chartData}>
-            <CartesianGrid stroke="#eee" strokeDasharray="5 5" />
+            <CartesianGrid stroke="#eee" />
             <XAxis dataKey="date" />
             <YAxis />
             <Tooltip />
             <Legend />
-            <Line type="monotone" dataKey="value" stroke="#1890ff" dot={false} />
+            <Line type="monotone" dataKey="value" name="Receita" dot={false} />
           </LineChart>
         </ResponsiveContainer>
       </div>
@@ -143,54 +123,11 @@ function Dashboard() {
 }
 
 const styles = {
-  container: {
-    padding: 20,
-    fontFamily: "'Segoe UI', Tahoma, Geneva, Verdana, sans-serif",
-    backgroundColor: "#f5f5f5",
-    minHeight: "100vh",
-  },
-  title: { marginBottom: 20, color: "#333" },
-  filters: {
-    display: "flex",
-    gap: 10,
-    flexWrap: "wrap",
-    marginBottom: 20,
-  },
-  input: {
-    padding: "8px 12px",
-    borderRadius: 4,
-    border: "1px solid #ccc",
-  },
-  select: {
-    padding: "8px 12px",
-    borderRadius: 4,
-    border: "1px solid #ccc",
-  },
-  button: {
-    padding: "8px 16px",
-    backgroundColor: "#1890ff",
-    color: "#fff",
-    border: "none",
-    borderRadius: 4,
-    cursor: "pointer",
-  },
-  metricsContainer: {
-    display: "flex",
-    gap: 20,
-    flexWrap: "wrap",
-    marginBottom: 20,
-  },
-  card: {
-    flex: 1,
-    minWidth: 180,
-    padding: 20,
-    borderRadius: 8,
-    backgroundColor: "#fff",
-    boxShadow: "0 2px 5px rgba(0,0,0,0.1)",
-    color: "#333",
-    fontWeight: 600,
-    textAlign: "center",
-  },
+  container: { padding: 20 },
+  title: { marginBottom: 20 },
+  filters: { display: "flex", gap: 10, marginBottom: 20 },
+  metricsContainer: { display: "flex", gap: 20, marginBottom: 20 },
+  card: { padding: 20, background: "#fff", borderRadius: 8, minWidth: 200 },
 };
 
 export default Dashboard;

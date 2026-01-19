@@ -1,15 +1,27 @@
 import { useState } from "react";
-import api from "../services/api";
+import { api, register } from "../services/api";
 
 export default function Login({ onLogin }) {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
+  const [isRegister, setIsRegister] = useState(false);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
 
     try {
+      if (isRegister) {
+        const res = await register(username, password);
+        if (!res.success) {
+          setError(res.message);
+          return;
+        }
+        setIsRegister(false);
+        setError("Usuário criado. Faça login.");
+        return;
+      }
+
       const res = await api.post("/login", { username, password });
       localStorage.setItem("token", res.data.token);
       onLogin();
@@ -21,7 +33,7 @@ export default function Login({ onLogin }) {
   return (
     <div style={styles.container}>
       <form onSubmit={handleSubmit} style={styles.box}>
-        <h2>Login</h2>
+        <h2>{isRegister ? "Cadastrar" : "Login"}</h2>
 
         <input
           placeholder="Usuário"
@@ -36,7 +48,20 @@ export default function Login({ onLogin }) {
           onChange={(e) => setPassword(e.target.value)}
         />
 
-        <button type="submit">Entrar</button>
+        <button type="submit">
+          {isRegister ? "Cadastrar" : "Entrar"}
+        </button>
+
+        <button
+          type="button"
+          onClick={() => {
+            setIsRegister(!isRegister);
+            setError("");
+          }}
+          style={{ background: "transparent", color: "#38bdf8" }}
+        >
+          {isRegister ? "Já tenho conta" : "Criar conta"}
+        </button>
 
         {error && <p style={{ color: "red" }}>{error}</p>}
       </form>
